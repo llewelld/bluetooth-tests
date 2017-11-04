@@ -1,0 +1,33 @@
+<node>
+	<interface name="org.bluez.LEAdvertisement1">
+		<method name="Release">
+		</method>
+
+		<property name="Type" type="s" access="read"/>
+		<property name="ServiceUUIDs" type="as" access="read"/>
+	</interface>
+
+	<interface name="org.bluez.LEAdvertisingManager1">
+		<method name="RegisterAdvertisement">
+			<arg direction="in" type="o" name="advertisement"/>
+			<arg direction="in" type="a{sv}" name="options"/>
+		</method>
+
+		<method name="UnregisterAdvertisement">
+			<arg direction="in" type="o" name="advertisement"/>
+		</method>
+	</interface>
+
+	<interface name="org.bluez.GattManager1">
+		<method name="RegisterApplication">
+			<arg name="application" type="o" direction="in"/>
+			<arg name="options" type="a{sv}" direction="in"/>
+		</method>
+		<method name="UnregisterApplication">
+			<arg name="application" type="o" direction="in"/>
+		</method>
+	</interface>
+
+</node>
+
+
