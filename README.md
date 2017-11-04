@@ -5,7 +5,9 @@ Tests of bluez dbus interface for Bluetooth and BLE
 ## Build bluez 5.46
 
 ```
-sudo apt-get install debhelper dh-autoreconf flex bison libdbus-glib-1-dev libglib2.0-dev libcap-ng-dev libudev-dev libreadline-dev libical-dev check dh-systemd libebook1.2-dev
+sudo apt-get install debhelper dh-autoreconf flex bison libdbus-glib-1-dev \
+	libglib2.0-dev libcap-ng-dev libudev-dev libreadline-dev libical-dev check \
+	dh-systemd libebook1.2-dev
 
 wget https://launchpad.net/ubuntu/+archive/primary/+files/bluez_5.46.orig.tar.xz
 wget https://launchpad.net/ubuntu/+archive/primary/+files/bluez_5.46-0ubuntu1.debian.tar.xz
