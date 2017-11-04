@@ -28,6 +28,29 @@
 		</method>
 	</interface>
 
+	<interface name="org.bluez.GattService1">
+		<property name="UUID" type="s" access="read"/>
+		<property name="Primary" type="b" access="read"/>
+	</interface>
+
+	<interface name="org.bluez.GattCharacteristic1">
+		<method name="ReadValue">
+			<arg name="value" type="ay" direction="out"/>
+			<arg name="options" type="a{sv}" direction="in"/>
+		</method>
+		<method name="WriteValue">
+			<arg name="value" type="ay" direction="in"/>
+			<arg name="options" type="a{sv}" direction="in"/>
+		</method>
+		<method name="StartNotify">
+		</method>
+		<method name="StopNotify">
+		</method>
+
+		<property name="UUID" type="s" access="read"/>
+		<property name="Service" type="o" access="read"/>
+		<property name="Flags" type="as" access="read"/>
+	</interface>
 </node>
 
 
