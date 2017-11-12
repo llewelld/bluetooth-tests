@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <syslog.h>
+#include <string.h>
 
 #include <gio/gio.h>
 #include <dbus/dbus.h>
@@ -15,6 +16,9 @@
 #define BLUEZ_ADVERT_PATH "/org/bluez/hci0/advert1"
 #define BLUEZ_DEVICE_PATH "/org/bluez/hci0"
 #define SERVICE_UUID "0123"
+#define CHARACTERISTIC_UUID "5678"
+#define CHARACTERISTIC_VALUE "012"
+#define CHARACTERISTIC_LENGTH (16)
 
 #define BLUEZ_GATT_OBJECT_PATH "/org/bluez/gatt"
 #define BLUEZ_GATT_SERVICE_PATH "/org/bluez/gatt/service0"
@@ -27,7 +31,8 @@ LEAdvertisingManager1 * leadvertisingmanager;
 GattManager1 * gattmanager;
 GattService1 * gattservice;
 GattCharacteristic1 * gattcharacteristic;
-	
+char characteristic[CHARACTERISTIC_LENGTH];
+
 // Function prototypes
 
 /**
@@ -46,15 +51,18 @@ static gboolean handle_release(LEAdvertisement1 * object, GDBusMethodInvocation 
 }
 
 static gboolean handle_read_value(GattCharacteristic1 * object, GDBusMethodInvocation * invocation, GVariant *arg_options, gpointer user_data) {
-	printf("Read value\n");
+	printf("Read value: %s\n", characteristic);
 
-	gatt_characteristic1_complete_read_value(object, invocation, "012");
+	gatt_characteristic1_complete_read_value(object, invocation, characteristic);
 	
 	return TRUE;
 }
 
 static gboolean handle_write_value(GattCharacteristic1 * object, GDBusMethodInvocation * invocation, const gchar *arg_value, GVariant *arg_options, gpointer user_data) {
-	printf("Write value\n");
+	printf("Write value: %s\n", arg_value);
+
+	strncpy(characteristic, arg_value, CHARACTERISTIC_LENGTH);
+	characteristic[CHARACTERISTIC_LENGTH - 1] = 0;
 
 	gatt_characteristic1_complete_write_value(object, invocation);
 	
@@ -146,6 +154,8 @@ gint main(gint argc, gchar * argv[]) {
 	ObjectSkeleton * object_gatt_characteristic;
 	const gchar * const charflags[] = {"read", "write"};
 
+	strncpy(characteristic, CHARACTERISTIC_VALUE, CHARACTERISTIC_LENGTH);
+	characteristic[CHARACTERISTIC_LENGTH - 1] = 0;
 	error = NULL;
 	loop = g_main_loop_new(NULL, FALSE);
 
@@ -220,7 +230,7 @@ gint main(gint argc, gchar * argv[]) {
 	gattservice = gatt_service1_skeleton_new();
 
 	// Set the gatt service properties
-	gatt_service1_set_uuid(gattservice, "0123");
+	gatt_service1_set_uuid(gattservice, SERVICE_UUID);
 	gatt_service1_set_primary(gattservice, TRUE);
 
 	object_gatt_service = object_skeleton_new (BLUEZ_GATT_SERVICE_PATH);
@@ -235,7 +245,7 @@ gint main(gint argc, gchar * argv[]) {
 	gattcharacteristic = gatt_characteristic1_skeleton_new();
 
 	// Set the gatt characteristic properties
-	gatt_characteristic1_set_uuid (gattcharacteristic, "5678");
+	gatt_characteristic1_set_uuid (gattcharacteristic, CHARACTERISTIC_UUID);
 	gatt_characteristic1_set_service (gattcharacteristic, BLUEZ_GATT_SERVICE_PATH);
 	gatt_characteristic1_set_flags (gattcharacteristic, charflags);
 
