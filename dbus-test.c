@@ -32,6 +32,7 @@ GattManager1 * gattmanager;
 GattService1 * gattservice;
 GattCharacteristic1 * gattcharacteristic;
 char characteristic[CHARACTERISTIC_LENGTH];
+int charlength;
 
 // Function prototypes
 
@@ -51,18 +52,32 @@ static gboolean handle_release(LEAdvertisement1 * object, GDBusMethodInvocation 
 }
 
 static gboolean handle_read_value(GattCharacteristic1 * object, GDBusMethodInvocation * invocation, GVariant *arg_options, gpointer user_data) {
+	GVariant * variant;
+
 	printf("Read value: %s\n", characteristic);
 
-	gatt_characteristic1_complete_read_value(object, invocation, characteristic);
+	variant = g_variant_new_from_data (G_VARIANT_TYPE("ay"), characteristic, charlength, TRUE, NULL, NULL);
+
+	gatt_characteristic1_complete_read_value(object, invocation, variant);
 	
 	return TRUE;
 }
 
-static gboolean handle_write_value(GattCharacteristic1 * object, GDBusMethodInvocation * invocation, const gchar *arg_value, GVariant *arg_options, gpointer user_data) {
-	printf("Write value: %s\n", arg_value);
+static gboolean handle_write_value(GattCharacteristic1 * object, GDBusMethodInvocation * invocation, GVariant *arg_value, GVariant *arg_options, gpointer user_data) {
+	GVariantIter * iter;
+	guchar data;
 
-	strncpy(characteristic, arg_value, CHARACTERISTIC_LENGTH);
-	characteristic[CHARACTERISTIC_LENGTH - 1] = 0;
+	g_variant_get(arg_value, "ay", &iter);
+
+	charlength = 0;
+	while ((g_variant_iter_loop(iter, "y", &data) && (charlength < (CHARACTERISTIC_LENGTH - 1)))) {
+		characteristic[charlength] = data;
+		charlength++;
+	}
+	g_variant_iter_free(iter);
+
+	characteristic[charlength] = 0;
+	printf("Write value: %s\n", characteristic);
 
 	gatt_characteristic1_complete_write_value(object, invocation);
 	
@@ -155,6 +170,7 @@ gint main(gint argc, gchar * argv[]) {
 	const gchar * const charflags[] = {"read", "write"};
 
 	strncpy(characteristic, CHARACTERISTIC_VALUE, CHARACTERISTIC_LENGTH);
+	charlength = strlen(characteristic);
 	characteristic[CHARACTERISTIC_LENGTH - 1] = 0;
 	error = NULL;
 	loop = g_main_loop_new(NULL, FALSE);

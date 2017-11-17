@@ -35,11 +35,15 @@
 
 	<interface name="org.bluez.GattCharacteristic1">
 		<method name="ReadValue">
-			<arg name="value" type="ay" direction="out"/>
+			<arg name="value" type="ay" direction="out">
+				<annotation name="org.gtk.GDBus.C.ForceGVariant" value="true"/>
+			</arg>
 			<arg name="options" type="a{sv}" direction="in"/>
 		</method>
 		<method name="WriteValue">
-			<arg name="value" type="ay" direction="in"/>
+			<arg name="value" type="ay" direction="in">
+				<annotation name="org.gtk.GDBus.C.ForceGVariant" value="true"/>
+			</arg>
 			<arg name="options" type="a{sv}" direction="in"/>
 		</method>
 		<method name="StartNotify">
