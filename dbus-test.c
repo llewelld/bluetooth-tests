@@ -207,7 +207,7 @@ static gboolean handle_read_value(GattCharacteristic1 * object, GDBusMethodInvoc
 
 static void send_data(ServiceBle * serviceble, char const * data, int length) {
 	GVariant * variant1;
-	GVariant * variant2;
+	//GVariant * variant2;
 
 	// Store the data to send
 	buffer_append(serviceble->buffer_read, data, length);
@@ -399,14 +399,7 @@ static gboolean key_event(GtkWidget *widget, GdkEventKey *event, gpointer user_d
 	return FALSE;
 }
 
-/**
- * Main; the entry point of the service.
- *
- * @param argc the number of arguments passed in
- * @param argv array of arguments passed in
- * @return value returned on service exit
- */
-gint main(gint argc, gchar * argv[]) {
+static void initialise(ServiceBle * serviceble) {
 	GError *error;
 	guint id;
 	GDBusConnection * connection;
@@ -420,18 +413,16 @@ gint main(gint argc, gchar * argv[]) {
 	ObjectSkeleton * object_gatt_service;
 	ObjectSkeleton * object_gatt_characteristic_outgoing;
 	ObjectSkeleton * object_gatt_characteristic_incoming;
-	const gchar * const charflags_outgoing[] = {"notify"};
-	const gchar * const charflags_incoming[] = {"write", "write-without-response"};
+	const gchar * const charflags_outgoing[] = {"notify", NULL};
+	const gchar * const charflags_incoming[] = {"write", "write-without-response", NULL};
 	char uuid[sizeof(SERVICE_UUID) + 1];
 	KeyPair * keypair;
 	EC_KEY * publickey;
 	Buffer * commitment;
 	char characteristic[CHARACTERISTIC_LENGTH];
-	ServiceBle * serviceble;
+	GVariant * variant1;
+	GVariant * variant2;
 
-	serviceble = serviceble_new();
-
-	gtk_init(&argc, &argv);
 
 	strncpy(characteristic, CHARACTERISTIC_VALUE, CHARACTERISTIC_LENGTH);
 	serviceble->charlength = strlen(characteristic);
@@ -553,6 +544,12 @@ gint main(gint argc, gchar * argv[]) {
 	error = NULL;
 	serviceble->gattcharacteristic_outgoing = gatt_characteristic1_skeleton_new();
 
+	// Initialise the characteristic value
+	buffer_clear(serviceble->buffer_read);
+	variant1 = g_variant_new_from_data (G_VARIANT_TYPE("ay"), buffer_get_buffer(serviceble->buffer_read), buffer_get_pos(serviceble->buffer_read), TRUE, NULL, NULL);
+	gatt_characteristic1_set_value (serviceble->gattcharacteristic_outgoing, variant1);
+	g_dbus_interface_skeleton_flush(G_DBUS_INTERFACE_SKELETON(serviceble->gattcharacteristic_outgoing));
+
 	// Set the gatt characteristic properties
 	gatt_characteristic1_set_uuid (serviceble->gattcharacteristic_outgoing, CHARACTERISTIC_UUID_OUTGOING);
 	gatt_characteristic1_set_service (serviceble->gattcharacteristic_outgoing, BLUEZ_GATT_SERVICE_PATH);
@@ -574,6 +571,12 @@ gint main(gint argc, gchar * argv[]) {
 	// Publish the gatt characteristic interface
 	error = NULL;
 	serviceble->gattcharacteristic_incoming = gatt_characteristic1_skeleton_new();
+
+	// Initialise the characteristic value
+	buffer_clear(serviceble->buffer_write);
+	variant2 = g_variant_new_from_data (G_VARIANT_TYPE("ay"), buffer_get_buffer(serviceble->buffer_write), buffer_get_pos(serviceble->buffer_write), TRUE, NULL, NULL);
+	gatt_characteristic1_set_value (serviceble->gattcharacteristic_incoming, variant2);
+	g_dbus_interface_skeleton_flush(G_DBUS_INTERFACE_SKELETON(serviceble->gattcharacteristic_incoming));
 
 	// Set the gatt characteristic properties
 	gatt_characteristic1_set_uuid (serviceble->gattcharacteristic_incoming, CHARACTERISTIC_UUID_INCOMING);
@@ -612,20 +615,31 @@ gint main(gint argc, gchar * argv[]) {
 	arg_options = g_variant_dict_end(& dict_options);
 
 	gatt_manager1_call_register_application(serviceble->gattmanager, BLUEZ_GATT_OBJECT_PATH, arg_options, NULL, (GAsyncReadyCallback)(&on_register_application), NULL);
+}
+
+
+/**
+ * Main; the entry point of the service.
+ *
+ * @param argc the number of arguments passed in
+ * @param argv array of arguments passed in
+ * @return value returned on service exit
+ */
+gint main(gint argc, gchar * argv[]) {
+	ServiceBle * serviceble;
+	GtkWidget * window;
+
+	gtk_init(&argc, &argv);
+
+	printf("Initialising\n");
+	serviceble = serviceble_new();
+	initialise(serviceble);
 
 	///////////////////////////////////////////////////////
 
-	GtkWidget * window;
-
 	window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-
 	g_signal_connect(window, "key-release-event", G_CALLBACK(key_event), serviceble);
-
 	gtk_widget_show (window);
-
-
-
-
 
 	printf("Entering main loop\n");
 	g_main_loop_run(serviceble->loop);
