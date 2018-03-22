@@ -19,6 +19,10 @@
 #include "pico/cryptosupport.h"
 #include "pico/fsmservice.h"
 
+#include "bluetooth/bluetooth.h"
+#include "bluetooth/hci.h"
+#include "bluetooth/hci_lib.h"
+
 // Defines
 
 #define BLUEZ_SERVICE_NAME "org.bluez"
@@ -37,7 +41,7 @@
 
 
 #define CHARACTERISTIC_VALUE "012"
-#define CHARACTERISTIC_LENGTH (256)
+#define CHARACTERISTIC_LENGTH (208)
 #define MAX_SEND_SIZE (128)
 
 #if (MAX_SEND_SIZE > CHARACTERISTIC_LENGTH)
@@ -92,6 +96,7 @@ static void serviceble_status_updated(int state, void * user_data);
 static gboolean serviceble_timeout(gpointer user_data);
 void serviceble_start(ServiceBle * serviceble, bool continuous);
 void serviceble_stop(ServiceBle * serviceble);
+static void set_advertising_frequency();
 
 
 
@@ -430,12 +435,9 @@ static void on_register_advert(LEAdvertisingManager1 *proxy, GAsyncResult *res, 
 
 	printf("Registered advert with result %d\n", result);
 
-	result = system("hcitool -i hci0 cmd 0x08 0x000a 02");
-	printf("HCI result: %d\n", result);
-	result = system("hcitool -i hci0 cmd 0x08 0x0006 A0 00 A0 00 00 00 00 00 00 00 00 00 00 07 00");
-	printf("HCI result: %d\n", result);
-	result = system("hcitool -i hci0 cmd 0x08 0x000a 01");
-	printf("HCI result: %d\n", result);
+	printf("Setting advertising frequency\n");
+	set_advertising_frequency();
+	printf("Advertising frequency set\n");
 }
 
 static void on_register_application(GattManager1 *proxy, GAsyncResult *res, gpointer user_data) {
@@ -1021,6 +1023,61 @@ static gboolean serviceble_timeout(gpointer user_data) {
 
 	return FALSE;
 }
+
+static void set_advertising_frequency() {
+	int result;
+	int dd;
+	int dev_id;
+	char bytes_disable[] = {0x00};
+	char bytes_interval[] = {0xA0, 0x00, 0xAF, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00};
+	char bytes_enable[] = {0x01};
+
+	dev_id = hci_get_route(NULL);
+
+	// Open device and return device descriptor
+	dd = hci_open_dev(dev_id);
+	if (dd < 0) {
+		printf("Device open failed");
+	}
+
+	// LE Set Advertising Enable Command
+	// See section 7.8.9 of the Core Bluetooth Specification version 5
+	// Parameters:
+	// - Advertising_Enable (0 = disable; 1 = enable)
+	result = hci_send_cmd(dd, 0x08, 0x000a, sizeof(bytes_disable), bytes_disable);
+	if (result < 0) {
+		printf("Error sending HCI command: disable");
+	}
+
+	// LE Set Advertising Parameters Command
+	// See section 7.8.5 of the Core Bluetooth Specification version 5
+	// Parameters:
+	//  - Advertising_Interval_Min (0x000020 to 0xFFFFFF; Time = N * 0.625 ms)
+	//  - Advertising_Interval_Max (0x000020 to 0xFFFFFF; Time = N * 0.625 ms)
+	//  - Advertising_Type (0 = Connectable and scannable undirected advertising)
+	//  - Own_Address_Type (0 = Public, 1 = Random)
+	//  - Peer_Address_Type (0 = Public, 1 = Random)
+	//  - Peer_Address (0xXXXXXXXXXXXX)
+	//  - Advertising_Channel_Map (xxxxxxx1b = Chan 37, xxxxxx1xb = Chan 38, xxxxx1xxb = Chan 39, 00000111b = All)
+	//  - Advertising_Filter_Policy (0 = No white list)
+	result = hci_send_cmd(dd, 0x08, 0x0006, sizeof(bytes_interval), bytes_interval);
+	if (result < 0) {
+		printf("Error sending HCI command: disable");
+	}
+
+	// LE Set Advertising Enable Command
+	// See section 7.8.9 of the Core Bluetooth Specification version 5
+	// Parameters:
+	// - Advertising_Enable (0 = disable; 1 = enable)
+	result = hci_send_cmd(dd, 0x08, 0x000a, sizeof(bytes_enable), bytes_enable);
+	if (result < 0) {
+		printf("Error sending HCI command: disable");
+	}
+
+	hci_close_dev(dd);
+}
+
+
 
 
 
