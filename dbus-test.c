@@ -429,6 +429,13 @@ static void on_register_advert(LEAdvertisingManager1 *proxy, GAsyncResult *res, 
 	report_error(&error, "registering advert callback");
 
 	printf("Registered advert with result %d\n", result);
+
+	result = system("hcitool -i hci0 cmd 0x08 0x000a 02");
+	printf("HCI result: %d\n", result);
+	result = system("hcitool -i hci0 cmd 0x08 0x0006 A0 00 A0 00 00 00 00 00 00 00 00 00 00 07 00");
+	printf("HCI result: %d\n", result);
+	result = system("hcitool -i hci0 cmd 0x08 0x000a 01");
+	printf("HCI result: %d\n", result);
 }
 
 static void on_register_application(GattManager1 *proxy, GAsyncResult *res, gpointer user_data) {
@@ -455,8 +462,11 @@ static void on_unregister_application(GattManager1 *proxy, GAsyncResult *res, gp
 
 	printf("Unregistered application with result %d\n", result);
 
-	serviceble->connected = FALSE;
-	fsmservice_disconnected(serviceble->fsmservice);
+	if (serviceble->connected == TRUE) {
+		printf("Setting as disconnected\n");
+		serviceble->connected = FALSE;
+		fsmservice_disconnected(serviceble->fsmservice);
+	}
 }
 
 /**
@@ -477,10 +487,20 @@ static void on_unregister_advert(LEAdvertisingManager1 *proxy, GAsyncResult *res
 	report_error(&error, "unregistering advert callback");
 
 	printf("Unregistered advert with result %d\n", result);
+
+	// All stopped
+	if (serviceble->connected == TRUE) {
+		printf("Setting as disconnected\n");
+		serviceble->connected = FALSE;
+		fsmservice_disconnected(serviceble->fsmservice);
+	}
 }
 
 
 static void finish(ServiceBle * serviceble) {
+	GError *error;
+
+	error = NULL;
 
 	///////////////////////////////////////////////////////
 
@@ -647,6 +667,7 @@ void serviceble_start(ServiceBle * serviceble, bool continuous) {
 	GVariant * variant1;
 	GVariant * variant2;
 	GVariant * arg_options;
+	int result;
 
 	error = NULL;
 
@@ -771,6 +792,13 @@ void serviceble_start(ServiceBle * serviceble, bool continuous) {
 	arg_options = g_variant_dict_end(& dict_options);
 
 	gatt_manager1_call_register_application(serviceble->gattmanager, BLUEZ_GATT_OBJECT_PATH, arg_options, NULL, (GAsyncReadyCallback)(&on_register_application), NULL);
+
+
+	// All started
+	//if (serviceble->connected == FALSE) {
+	//	serviceble->connected = TRUE;
+	//	fsmservice_connected(serviceble->fsmservice);
+	//}
 }
 
 void serviceble_stop(ServiceBle * serviceble) {
@@ -833,7 +861,7 @@ void serviceble_stop(ServiceBle * serviceble) {
 
 	printf("Unregister advertisement\n");
 
-	leadvertising_manager1_call_unregister_advertisement (serviceble->leadvertisingmanager, BLUEZ_ADVERT_PATH, NULL, (GAsyncReadyCallback)(&on_unregister_advert), NULL);
+	leadvertising_manager1_call_unregister_advertisement (serviceble->leadvertisingmanager, BLUEZ_ADVERT_PATH, NULL, (GAsyncReadyCallback)(&on_unregister_advert), serviceble);
 
 	///////////////////////////////////////////////////////
 
@@ -841,6 +869,7 @@ void serviceble_stop(ServiceBle * serviceble) {
 
 	// Publish the advertisement interface
 	//g_object_unref(serviceble->leadvertisement);
+
 }
 
 
@@ -938,11 +967,13 @@ static void serviceble_error(void * user_data) {
 static void serviceble_listen(void * user_data) {
 	ServiceBle * serviceble = (ServiceBle *)user_data;
 
+	printf("Requesting to listen\n");
 	if (serviceble->connected == FALSE) {
 		LOG(LOG_DEBUG, "Listening");
 		printf("Listening\n");
 
-		initialise(serviceble, TRUE);
+		//initialise(serviceble, TRUE);
+		serviceble_start(serviceble, TRUE);
 	}
 }
 
@@ -953,7 +984,8 @@ static void serviceble_disconnect(void * user_data) {
 	printf("Requesting disconnect\n");
 
 	if (serviceble->connected == TRUE) {
-		finish(serviceble);
+		serviceble_stop(serviceble);
+		//finish(serviceble);
 	}
 }
 
@@ -961,7 +993,7 @@ static void serviceble_authenticated(int status, void * user_data) {
 	//ServiceBle * serviceble = (ServiceBle *)user_data;
 
 	LOG(LOG_DEBUG, "Authenticated");
-	printf("Authenticated\n");
+	printf("Authenticated status: %d\n", status);
 }
 
 static void serviceble_session_ended(void * user_data) {
