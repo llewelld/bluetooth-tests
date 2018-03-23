@@ -116,11 +116,13 @@ static gboolean handle_stop_notify(GattCharacteristic1 * object, GDBusMethodInvo
 static void report_error(GError ** error, char const * hint);
 static void on_register_advert(LEAdvertisingManager1 *proxy, GAsyncResult *res, gpointer user_data);
 static void on_register_application(GattManager1 *proxy, GAsyncResult *res, gpointer user_data);
-static void on_unregister_application(GattManager1 *proxy, GAsyncResult *res, gpointer user_data) ;
 static void on_unregister_advert(LEAdvertisingManager1 *proxy, GAsyncResult *res, gpointer user_data);
 static gboolean key_event(GtkWidget *widget, GdkEventKey *event, gpointer user_data);
 static void generate_uuid(ServiceBle * serviceble, bool continuous, char * uuid, size_t length);
-
+static void on_g_bus_get (GObject *source_object, GAsyncResult *res, gpointer user_data);
+static void on_leadvertising_manager1_proxy_new(GDBusConnection * connection, GAsyncResult *res, gpointer user_data);
+static void on_gatt_manager1_proxy_new(GDBusConnection * connection, GAsyncResult *res, gpointer user_data);
+static void on_gatt_manager1_call_unregister_application(GattManager1 * gattmanager, GAsyncResult *res, gpointer user_data);
 
 
 
@@ -355,7 +357,7 @@ static void send_data(ServiceBle * serviceble, char const * data, size_t size) {
 	GVariant * variant;
 	size_t sendsize;
 	size_t buffersize;
-	unsigned char * sendstart;
+	char * sendstart;
 	//GVariant * variant2;
 
 	// Store the data to send
@@ -529,25 +531,6 @@ static void on_register_application(GattManager1 *proxy, GAsyncResult *res, gpoi
 	printf("Registered application with result %d\n", result);
 }
 
-static void on_unregister_application(GattManager1 *proxy, GAsyncResult *res, gpointer user_data) {
-	ServiceBle * serviceble = (ServiceBle *)user_data;
-	gboolean result;
-	GError *error;
-
-	error = NULL;
-
-	result = gatt_manager1_call_unregister_application_finish(proxy, res, &error);
-	report_error(&error, "unregistering application callback");
-
-	printf("Unregistered application with result %d\n", result);
-
-	if (serviceble->connected == TRUE) {
-		printf("Setting as disconnected\n");
-		serviceble->connected = FALSE;
-		fsmservice_disconnected(serviceble->fsmservice);
-	}
-}
-
 /**
  * Advertisement unregistration callback
  *
@@ -598,13 +581,10 @@ static gboolean key_event(GtkWidget *widget, GdkEventKey *event, gpointer user_d
 
 static void generate_uuid(ServiceBle * serviceble, bool continuous, char * uuid, size_t length) {
 	char characteristic[CHARACTERISTIC_LENGTH];
-	GError *error;
 	KeyPair * keypair;
 	EC_KEY * publickey;
 	Buffer * commitment;
 	gboolean result;
-
-	error = NULL;
 
 	strncpy(characteristic, CHARACTERISTIC_VALUE, CHARACTERISTIC_LENGTH);
 	serviceble->charlength = strlen(characteristic);
@@ -637,8 +617,6 @@ static void generate_uuid(ServiceBle * serviceble, bool continuous, char * uuid,
 
 void serviceble_start(ServiceBle * serviceble) {
 	initialise(serviceble);
-
-	advertising_start(serviceble, FALSE);
 }
 
 void serviceble_stop(ServiceBle * serviceble) {
@@ -646,14 +624,6 @@ void serviceble_stop(ServiceBle * serviceble) {
 }
 
 static void initialise(ServiceBle * serviceble) {
-	GError *error;
-	guint id;
-	gboolean result;
-
-	error = NULL;
-
-	///////////////////////////////////////////////////////
-
 	printf("Creating object manager server\n");
 
 	serviceble->object_manager_advert = g_dbus_object_manager_server_new(BLUEZ_OBJECT_PATH);
@@ -662,36 +632,73 @@ static void initialise(ServiceBle * serviceble) {
 
 	printf("Getting bus\n");
 
-	serviceble->connection = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &error);
-	report_error(&error, "getting bus");
+	// This is an asynchronous call, so initialisation continuous in the callback
+	g_bus_get(G_BUS_TYPE_SYSTEM, NULL, (GAsyncReadyCallback)(&on_g_bus_get), serviceble);
 
-	///////////////////////////////////////////////////////
-
-	printf("Creating advertising manager\n");
-
-	// Obtain a proxy for the LEAdvertisementMAanager1 interface
-	serviceble->leadvertisingmanager = leadvertising_manager1_proxy_new_sync(serviceble->connection, G_DBUS_PROXY_FLAGS_NONE, BLUEZ_SERVICE_NAME, BLUEZ_DEVICE_PATH, NULL, &error);
-	report_error(&error, "creating advertising manager");
-
-	///////////////////////////////////////////////////////
-
-	printf("Creating Gatt manager\n");
-
-	// Obtain a proxy for the Gattmanager1 interface
-	serviceble->gattmanager = gatt_manager1_proxy_new_sync(serviceble->connection, G_DBUS_PROXY_FLAGS_NONE, BLUEZ_SERVICE_NAME, BLUEZ_DEVICE_PATH, NULL, &error);
-	report_error(&error, "creating gatt manager");
-
-	///////////////////////////////////////////////////////
-
-	printf("Creating object manager server\n");
-
-	serviceble->object_manager_gatt = g_dbus_object_manager_server_new(BLUEZ_GATT_OBJECT_PATH);
 
 	///////////////////////////////////////////////////////
 	///////////////////////////////////////////////////////
 	///////////////////////////////////////////////////////
 	///////////////////////////////////////////////////////
 }
+
+static void on_g_bus_get (GObject *source_object, GAsyncResult *res, gpointer user_data) {
+	ServiceBle * serviceble = (ServiceBle *)user_data;
+	GError *error;
+
+	error = NULL;
+
+	serviceble->connection = g_bus_get_finish(res, & error);
+	report_error(&error, "getting bus");
+
+	if (serviceble->connection != NULL) {
+		printf("Creating advertising manager\n");
+
+		// Obtain a proxy for the LEAdvertisementMAanager1 interface
+		// This is an asynchronous call, so initialisation continuous in the callback
+		leadvertising_manager1_proxy_new(serviceble->connection, G_DBUS_PROXY_FLAGS_NONE, BLUEZ_SERVICE_NAME, BLUEZ_DEVICE_PATH, NULL, (GAsyncReadyCallback)(&on_leadvertising_manager1_proxy_new), serviceble);
+	}
+}
+
+static void on_leadvertising_manager1_proxy_new(GDBusConnection * connection, GAsyncResult *res, gpointer user_data) {
+	ServiceBle * serviceble = (ServiceBle *)user_data;
+	GError *error;
+
+	error = NULL;
+
+	serviceble->leadvertisingmanager = leadvertising_manager1_proxy_new_finish(res, &error);
+	report_error(&error, "creating advertising manager");
+
+	if (serviceble->leadvertisingmanager != NULL) {
+		printf("Creating Gatt manager\n");
+
+		// Obtain a proxy for the Gattmanager1 interface
+		// This is an asynchronous call, so initialisation continuous in the callback
+		gatt_manager1_proxy_new(serviceble->connection, G_DBUS_PROXY_FLAGS_NONE, BLUEZ_SERVICE_NAME, BLUEZ_DEVICE_PATH, NULL, (GAsyncReadyCallback)(&on_gatt_manager1_proxy_new), serviceble);
+	}
+}
+
+static void on_gatt_manager1_proxy_new(GDBusConnection * connection, GAsyncResult *res, gpointer user_data) {
+	ServiceBle * serviceble = (ServiceBle *)user_data;
+	GError *error;
+
+	error = NULL;
+
+	serviceble->gattmanager = gatt_manager1_proxy_new_finish (res, &error);
+	report_error(&error, "creating gatt manager");
+
+	if (serviceble->gattmanager != NULL) {
+		///////////////////////////////////////////////////////
+
+		printf("Creating object manager server\n");
+
+		serviceble->object_manager_gatt = g_dbus_object_manager_server_new(BLUEZ_GATT_OBJECT_PATH);
+
+		// Initialisation is complete, now start advertising
+		advertising_start(serviceble, FALSE);
+	}
+}
+
 
 static void finalise(ServiceBle * serviceble) {
 	///////////////////////////////////////////////////////
@@ -735,7 +742,6 @@ static void finalise(ServiceBle * serviceble) {
 }
 
 void advertising_start(ServiceBle * serviceble, bool continuous) {
-	GError *error;
 	gchar const * uuids[] = {SERVICE_UUID, NULL};
 	char uuid[sizeof(SERVICE_UUID) + 1];
 	ObjectSkeleton * object_advert;
@@ -745,9 +751,6 @@ void advertising_start(ServiceBle * serviceble, bool continuous) {
 	GVariant * variant1;
 	GVariant * variant2;
 	GVariant * arg_options;
-	int result;
-
-	error = NULL;
 
 	generate_uuid(serviceble, continuous, uuid, (sizeof(SERVICE_UUID) + 1));
 	uuids[0] = uuid;
@@ -787,7 +790,6 @@ void advertising_start(ServiceBle * serviceble, bool continuous) {
 	printf("Creating Gatt service\n");
 
 	// Publish the gatt service interface
-	error = NULL;
 	serviceble->gattservice = gatt_service1_skeleton_new();
 
 	// Set the gatt service properties
@@ -802,7 +804,6 @@ void advertising_start(ServiceBle * serviceble, bool continuous) {
 	printf("Creating Gatt characteristic outgoing\n");
 
 	// Publish the gatt characteristic interface
-	error = NULL;
 	serviceble->gattcharacteristic_outgoing = gatt_characteristic1_skeleton_new();
 
 	// Initialise the characteristic value
@@ -830,7 +831,6 @@ void advertising_start(ServiceBle * serviceble, bool continuous) {
 	printf("Creating Gatt characteristic incoming\n");
 
 	// Publish the gatt characteristic interface
-	error = NULL;
 	serviceble->gattcharacteristic_incoming = gatt_characteristic1_skeleton_new();
 
 	// Initialise the characteristic value
@@ -880,19 +880,30 @@ void advertising_start(ServiceBle * serviceble, bool continuous) {
 }
 
 void advertising_stop(ServiceBle * serviceble, bool finalise) {
-	GError *error;
-	guint matchedsignals;
-	gboolean result;
-
-	error = NULL;
-
 	serviceble->finalise = finalise;
 
 	///////////////////////////////////////////////////////
 
 	printf("Unregister gatt service\n");
-	gatt_manager1_call_unregister_application_sync (serviceble->gattmanager, BLUEZ_GATT_OBJECT_PATH, NULL, &error);
+
+	// This is an asynchronous call, so advertisement stopping continuous in the callback
+	gatt_manager1_call_unregister_application(serviceble->gattmanager, BLUEZ_GATT_OBJECT_PATH, NULL, (GAsyncReadyCallback)(&on_gatt_manager1_call_unregister_application), serviceble);
+}
+
+
+static void on_gatt_manager1_call_unregister_application(GattManager1 * gattmanager, GAsyncResult *res, gpointer user_data) {
+	ServiceBle * serviceble = (ServiceBle *)user_data;
+	GError *error;
+	gboolean result;
+	guint matchedsignals;
+
+	error = NULL;
+
+	result = gatt_manager1_call_unregister_application_finish(gattmanager, res, &error);
 	report_error(&error, "unregistering gatt service");
+	if (result == FALSE) {
+		printf("Gatt service failed to unregister\n");
+	}
 
 	///////////////////////////////////////////////////////
 
@@ -1071,6 +1082,9 @@ gint main(gint argc, gchar * argv[]) {
 
 	users = users_new();
 	usersresult = users_load(users, "users.txt");
+	if (usersresult != USERFILE_SUCCESS) {
+		printf("Failed to load user file\n");
+	}
 
 	extradata = buffer_new(0);
 
