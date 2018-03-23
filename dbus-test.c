@@ -81,9 +81,13 @@ typedef struct _ServiceBle {
 	ObjectSkeleton * object_gatt_service;
 	ObjectSkeleton * object_gatt_characteristic_outgoing;
 	ObjectSkeleton * object_gatt_characteristic_incoming;
+	bool finalise;
 } ServiceBle;
 
 // Function prototypes
+
+void serviceble_start(ServiceBle * serviceble);
+void serviceble_stop(ServiceBle * serviceble);
 
 static void serviceble_write(char const * data, size_t length, void * user_data);
 static void serviceble_set_timeout(int timeout, void * user_data);
@@ -94,9 +98,28 @@ static void serviceble_authenticated(int status, void * user_data);
 static void serviceble_session_ended(void * user_data);
 static void serviceble_status_updated(int state, void * user_data);
 static gboolean serviceble_timeout(gpointer user_data);
-void serviceble_start(ServiceBle * serviceble, bool continuous);
-void serviceble_stop(ServiceBle * serviceble);
+
+void advertising_start(ServiceBle * serviceble, bool continuous);
+void advertising_stop(ServiceBle * serviceble, bool finalise);
+
+static void initialise(ServiceBle * serviceble);
+static void finalise(ServiceBle * serviceble);
 static void set_advertising_frequency();
+static void appendbytes(char unsigned const * bytes, int num, Buffer * out);
+static void create_uuid(char const * commitmentb64, bool continuous, char uuid[sizeof(SERVICE_UUID) + 1], size_t length);
+static gboolean handle_release(LEAdvertisement1 * object, GDBusMethodInvocation * invocation, gpointer user_data);
+static gboolean handle_read_value(GattCharacteristic1 * object, GDBusMethodInvocation * invocation, GVariant *arg_options, gpointer user_data);
+static void send_data(ServiceBle * serviceble, char const * data, size_t size);
+static gboolean handle_write_value(GattCharacteristic1 * object, GDBusMethodInvocation * invocation, GVariant *arg_value, GVariant *arg_options, gpointer user_data);
+static gboolean handle_start_notify(GattCharacteristic1 * object, GDBusMethodInvocation * invocation, gpointer user_data);
+static gboolean handle_stop_notify(GattCharacteristic1 * object, GDBusMethodInvocation * invocation, gpointer user_data);
+static void report_error(GError ** error, char const * hint);
+static void on_register_advert(LEAdvertisingManager1 *proxy, GAsyncResult *res, gpointer user_data);
+static void on_register_application(GattManager1 *proxy, GAsyncResult *res, gpointer user_data);
+static void on_unregister_application(GattManager1 *proxy, GAsyncResult *res, gpointer user_data) ;
+static void on_unregister_advert(LEAdvertisingManager1 *proxy, GAsyncResult *res, gpointer user_data);
+static gboolean key_event(GtkWidget *widget, GdkEventKey *event, gpointer user_data);
+static void generate_uuid(ServiceBle * serviceble, bool continuous, char * uuid, size_t length);
 
 
 
@@ -129,6 +152,7 @@ ServiceBle * serviceble_new() {
 	serviceble->object_gatt_service = NULL;
 	serviceble->object_gatt_characteristic_outgoing = NULL;
 	serviceble->object_gatt_characteristic_incoming = NULL;
+	serviceble->finalise = FALSE;
 
 	fsmservice_set_functions(serviceble->fsmservice, serviceble_write, serviceble_set_timeout, serviceble_error, serviceble_listen, serviceble_disconnect, serviceble_authenticated, serviceble_session_ended, serviceble_status_updated);
 	fsmservice_set_userdata(serviceble->fsmservice, serviceble);
@@ -167,7 +191,7 @@ void service_delete(ServiceBle * serviceble) {
 
 
 
-void appendbytes(char unsigned const * bytes, int num, Buffer * out) {
+static void appendbytes(char unsigned const * bytes, int num, Buffer * out) {
 	int pos;
 	char letters[3];
 
@@ -177,7 +201,7 @@ void appendbytes(char unsigned const * bytes, int num, Buffer * out) {
 	}
 }
 
-void create_uuid(char const * commitmentb64, bool continuous, char uuid[sizeof(SERVICE_UUID) + 1], size_t length) {
+static void create_uuid(char const * commitmentb64, bool continuous, char uuid[sizeof(SERVICE_UUID) + 1], size_t length) {
 	unsigned char a[4];
 	unsigned char b[2];
 	unsigned char c[2];
@@ -239,6 +263,59 @@ void create_uuid(char const * commitmentb64, bool continuous, char uuid[sizeof(S
 
 	buffer_delete(commitment);
 	buffer_delete(generated);
+}
+
+static void set_advertising_frequency() {
+	int result;
+	int dd;
+	int dev_id;
+	char bytes_disable[] = {0x00};
+	char bytes_interval[] = {0xA0, 0x00, 0xAF, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00};
+	char bytes_enable[] = {0x01};
+
+	dev_id = hci_get_route(NULL);
+
+	// Open device and return device descriptor
+	dd = hci_open_dev(dev_id);
+	if (dd < 0) {
+		printf("Device open failed");
+	}
+
+	// LE Set Advertising Enable Command
+	// See section 7.8.9 of the Core Bluetooth Specification version 5
+	// Parameters:
+	// - Advertising_Enable (0 = disable; 1 = enable)
+	result = hci_send_cmd(dd, 0x08, 0x000a, sizeof(bytes_disable), bytes_disable);
+	if (result < 0) {
+		printf("Error sending HCI command: disable");
+	}
+
+	// LE Set Advertising Parameters Command
+	// See section 7.8.5 of the Core Bluetooth Specification version 5
+	// Parameters:
+	//  - Advertising_Interval_Min (0x000020 to 0xFFFFFF; Time = N * 0.625 ms)
+	//  - Advertising_Interval_Max (0x000020 to 0xFFFFFF; Time = N * 0.625 ms)
+	//  - Advertising_Type (0 = Connectable and scannable undirected advertising)
+	//  - Own_Address_Type (0 = Public, 1 = Random)
+	//  - Peer_Address_Type (0 = Public, 1 = Random)
+	//  - Peer_Address (0xXXXXXXXXXXXX)
+	//  - Advertising_Channel_Map (xxxxxxx1b = Chan 37, xxxxxx1xb = Chan 38, xxxxx1xxb = Chan 39, 00000111b = All)
+	//  - Advertising_Filter_Policy (0 = No white list)
+	result = hci_send_cmd(dd, 0x08, 0x0006, sizeof(bytes_interval), bytes_interval);
+	if (result < 0) {
+		printf("Error sending HCI command: disable");
+	}
+
+	// LE Set Advertising Enable Command
+	// See section 7.8.9 of the Core Bluetooth Specification version 5
+	// Parameters:
+	// - Advertising_Enable (0 = disable; 1 = enable)
+	result = hci_send_cmd(dd, 0x08, 0x000a, sizeof(bytes_enable), bytes_enable);
+	if (result < 0) {
+		printf("Error sending HCI command: disable");
+	}
+
+	hci_close_dev(dd);
 }
 
 /**
@@ -409,7 +486,7 @@ static gboolean handle_stop_notify(GattCharacteristic1 * object, GDBusMethodInvo
  * @param error the error structure to check and report if it exists
  * @param hint a human-readable hint that will be output alongside the error
  */
-void report_error(GError ** error, char const * hint) {
+static void report_error(GError ** error, char const * hint) {
 	if (*error) {
 		fprintf(stderr, "Error %s: %s\n", hint, (*error)->message);
 		g_error_free(*error);
@@ -496,71 +573,24 @@ static void on_unregister_advert(LEAdvertisingManager1 *proxy, GAsyncResult *res
 		serviceble->connected = FALSE;
 		fsmservice_disconnected(serviceble->fsmservice);
 	}
-}
 
-
-static void finish(ServiceBle * serviceble) {
-	GError *error;
-
-	error = NULL;
-
-	///////////////////////////////////////////////////////
-
-	printf("Creating object manager server\n");
-
-	serviceble->object_manager_gatt = g_dbus_object_manager_server_new(BLUEZ_GATT_OBJECT_PATH);
-
-	///////////////////////////////////////////////////////
-
-	printf("Creating Gatt manager\n");
-
-	// Obtain a proxy for the Gattmanager1 interface
-	serviceble->gattmanager = gatt_manager1_proxy_new_sync(serviceble->connection, G_DBUS_PROXY_FLAGS_NONE, BLUEZ_SERVICE_NAME, BLUEZ_DEVICE_PATH, NULL, &error);
-	report_error(&error, "creating gatt manager");
-
-	///////////////////////////////////////////////////////
-
-	printf("Creating advertising manager\n");
-
-	// Obtain a proxy for the LEAdvertisementMAanager1 interface
-	serviceble->leadvertisingmanager = leadvertising_manager1_proxy_new_sync(serviceble->connection, G_DBUS_PROXY_FLAGS_NONE, BLUEZ_SERVICE_NAME, BLUEZ_DEVICE_PATH, NULL, &error);
-	report_error(&error, "creating advertising manager");
-
-	///////////////////////////////////////////////////////
-
-	printf("Getting bus\n");
-
-	serviceble->connection = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &error);
-	report_error(&error, "getting bus");
-
-	///////////////////////////////////////////////////////
-
-	printf("Creating object manager server\n");
-
-	serviceble->object_manager_advert = g_dbus_object_manager_server_new(BLUEZ_OBJECT_PATH);
-
-
-	///////////////////////////////////////////////////////
-	///////////////////////////////////////////////////////
-	///////////////////////////////////////////////////////
-	///////////////////////////////////////////////////////
+	if (serviceble->finalise == TRUE) {
+		finalise(serviceble);
+	}
 }
 
 static gboolean key_event(GtkWidget *widget, GdkEventKey *event, gpointer user_data) {
 	ServiceBle * serviceble = (ServiceBle *)user_data;
 
 	g_printerr("%s\n", gdk_keyval_name (event->keyval));
+	if (event->keyval == 's') {
+		serviceble_start(serviceble);
+	}
 	if (event->keyval == 'f') {
-		finish(serviceble);
+		serviceble_stop(serviceble);
 	}
 	if (event->keyval == 'q') {
 		g_main_loop_quit(serviceble->loop);
-	}
-	if (event->keyval == 'c') {
-		serviceble_start(serviceble, FALSE);
-	}
-	if (event->keyval == 'd') {
-		serviceble_stop(serviceble);
 	}
 
 	return FALSE;
@@ -605,7 +635,17 @@ static void generate_uuid(ServiceBle * serviceble, bool continuous, char * uuid,
 	keypair_delete(keypair);
 }
 
-static void initialise(ServiceBle * serviceble, bool continuous) {
+void serviceble_start(ServiceBle * serviceble) {
+	initialise(serviceble);
+
+	advertising_start(serviceble, FALSE);
+}
+
+void serviceble_stop(ServiceBle * serviceble) {
+	advertising_stop(serviceble, TRUE);
+}
+
+static void initialise(ServiceBle * serviceble) {
 	GError *error;
 	guint id;
 	gboolean result;
@@ -651,14 +691,50 @@ static void initialise(ServiceBle * serviceble, bool continuous) {
 	///////////////////////////////////////////////////////
 	///////////////////////////////////////////////////////
 	///////////////////////////////////////////////////////
-
-
 }
 
+static void finalise(ServiceBle * serviceble) {
+	///////////////////////////////////////////////////////
+	///////////////////////////////////////////////////////
+	///////////////////////////////////////////////////////
+	///////////////////////////////////////////////////////
 
+	printf("Releasing object manager server\n");
 
+	g_object_unref(serviceble->object_manager_advert);
+	serviceble->object_manager_advert = NULL;
 
-void serviceble_start(ServiceBle * serviceble, bool continuous) {
+	///////////////////////////////////////////////////////
+
+	printf("Releasing bus\n");
+
+	g_object_unref(serviceble->connection);
+	serviceble->connection = NULL;
+
+	///////////////////////////////////////////////////////
+
+	printf("Releasing advertising manager\n");
+
+	g_object_unref(serviceble->leadvertisingmanager);
+	serviceble->leadvertisingmanager = NULL;
+
+	///////////////////////////////////////////////////////
+
+	printf("Releasing Gatt manager\n");
+
+	g_object_unref(serviceble->gattmanager);
+	serviceble->gattmanager = NULL;
+
+	///////////////////////////////////////////////////////
+
+	printf("Releasing object manager server\n");
+	g_object_unref(serviceble->object_manager_gatt);
+	serviceble->object_manager_gatt = NULL;
+
+	///////////////////////////////////////////////////////
+}
+
+void advertising_start(ServiceBle * serviceble, bool continuous) {
 	GError *error;
 	gchar const * uuids[] = {SERVICE_UUID, NULL};
 	char uuid[sizeof(SERVICE_UUID) + 1];
@@ -803,12 +879,14 @@ void serviceble_start(ServiceBle * serviceble, bool continuous) {
 	//}
 }
 
-void serviceble_stop(ServiceBle * serviceble) {
+void advertising_stop(ServiceBle * serviceble, bool finalise) {
 	GError *error;
 	guint matchedsignals;
 	gboolean result;
 
 	error = NULL;
+
+	serviceble->finalise = finalise;
 
 	///////////////////////////////////////////////////////
 
@@ -876,66 +954,6 @@ void serviceble_stop(ServiceBle * serviceble) {
 
 
 
-
-
-
-
-/**
- * Main; the entry point of the service.
- *
- * @param argc the number of arguments passed in
- * @param argv array of arguments passed in
- * @return value returned on service exit
- */
-gint main(gint argc, gchar * argv[]) {
-	ServiceBle * serviceble;
-	GtkWidget * window;
-	Shared * shared;
-	Users * users;
-	USERFILE usersresult;
-	Buffer * extradata;
-
-	gtk_init(&argc, &argv);
-
-	printf("Initialising\n");
-	serviceble = serviceble_new();
-
-	serviceble->loop = g_main_loop_new(NULL, FALSE);
-
-	initialise(serviceble, FALSE);
-
-	shared = shared_new();
-	shared_load_or_generate_keys(shared, "pico_pub_key.der", "pico_priv_key.der");
-
-	users = users_new();
-	usersresult = users_load(users, "users.txt");
-
-	extradata = buffer_new(0);
-
-	fsmservice_start(serviceble->fsmservice, shared, users, extradata);
-
-	///////////////////////////////////////////////////////
-
-	window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-	g_signal_connect(window, "key-release-event", G_CALLBACK(key_event), serviceble);
-	gtk_widget_show (window);
-
-	printf("Entering main loop\n");
-	g_main_loop_run(serviceble->loop);
-
-	printf("Exited main loop\n");	
-	g_main_loop_unref(serviceble->loop);
-
-	service_delete(serviceble);
-	shared_delete(shared);
-	users_delete(users);
-	buffer_delete(extradata);
-
-	printf("The End\n");
-
-	return 0;
-}
-
 static void serviceble_write(char const * data, size_t length, void * user_data) {
 	ServiceBle * serviceble = (ServiceBle *)user_data;
 
@@ -975,7 +993,7 @@ static void serviceble_listen(void * user_data) {
 		printf("Listening\n");
 
 		//initialise(serviceble, TRUE);
-		serviceble_start(serviceble, TRUE);
+		advertising_start(serviceble, TRUE);
 	}
 }
 
@@ -986,8 +1004,7 @@ static void serviceble_disconnect(void * user_data) {
 	printf("Requesting disconnect\n");
 
 	if (serviceble->connected == TRUE) {
-		serviceble_stop(serviceble);
-		//finish(serviceble);
+		advertising_stop(serviceble, FALSE);
 	}
 }
 
@@ -1024,59 +1041,62 @@ static gboolean serviceble_timeout(gpointer user_data) {
 	return FALSE;
 }
 
-static void set_advertising_frequency() {
-	int result;
-	int dd;
-	int dev_id;
-	char bytes_disable[] = {0x00};
-	char bytes_interval[] = {0xA0, 0x00, 0xAF, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00};
-	char bytes_enable[] = {0x01};
 
-	dev_id = hci_get_route(NULL);
+/**
+ * Main; the entry point of the service.
+ *
+ * @param argc the number of arguments passed in
+ * @param argv array of arguments passed in
+ * @return value returned on service exit
+ */
+gint main(gint argc, gchar * argv[]) {
+	ServiceBle * serviceble;
+	GtkWidget * window;
+	Shared * shared;
+	Users * users;
+	USERFILE usersresult;
+	Buffer * extradata;
 
-	// Open device and return device descriptor
-	dd = hci_open_dev(dev_id);
-	if (dd < 0) {
-		printf("Device open failed");
-	}
+	gtk_init(&argc, &argv);
 
-	// LE Set Advertising Enable Command
-	// See section 7.8.9 of the Core Bluetooth Specification version 5
-	// Parameters:
-	// - Advertising_Enable (0 = disable; 1 = enable)
-	result = hci_send_cmd(dd, 0x08, 0x000a, sizeof(bytes_disable), bytes_disable);
-	if (result < 0) {
-		printf("Error sending HCI command: disable");
-	}
+	printf("Initialising\n");
+	serviceble = serviceble_new();
 
-	// LE Set Advertising Parameters Command
-	// See section 7.8.5 of the Core Bluetooth Specification version 5
-	// Parameters:
-	//  - Advertising_Interval_Min (0x000020 to 0xFFFFFF; Time = N * 0.625 ms)
-	//  - Advertising_Interval_Max (0x000020 to 0xFFFFFF; Time = N * 0.625 ms)
-	//  - Advertising_Type (0 = Connectable and scannable undirected advertising)
-	//  - Own_Address_Type (0 = Public, 1 = Random)
-	//  - Peer_Address_Type (0 = Public, 1 = Random)
-	//  - Peer_Address (0xXXXXXXXXXXXX)
-	//  - Advertising_Channel_Map (xxxxxxx1b = Chan 37, xxxxxx1xb = Chan 38, xxxxx1xxb = Chan 39, 00000111b = All)
-	//  - Advertising_Filter_Policy (0 = No white list)
-	result = hci_send_cmd(dd, 0x08, 0x0006, sizeof(bytes_interval), bytes_interval);
-	if (result < 0) {
-		printf("Error sending HCI command: disable");
-	}
+	serviceble->loop = g_main_loop_new(NULL, FALSE);
 
-	// LE Set Advertising Enable Command
-	// See section 7.8.9 of the Core Bluetooth Specification version 5
-	// Parameters:
-	// - Advertising_Enable (0 = disable; 1 = enable)
-	result = hci_send_cmd(dd, 0x08, 0x000a, sizeof(bytes_enable), bytes_enable);
-	if (result < 0) {
-		printf("Error sending HCI command: disable");
-	}
+	serviceble_start(serviceble);
 
-	hci_close_dev(dd);
+	shared = shared_new();
+	shared_load_or_generate_keys(shared, "pico_pub_key.der", "pico_priv_key.der");
+
+	users = users_new();
+	usersresult = users_load(users, "users.txt");
+
+	extradata = buffer_new(0);
+
+	fsmservice_start(serviceble->fsmservice, shared, users, extradata);
+
+	///////////////////////////////////////////////////////
+
+	window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+	g_signal_connect(window, "key-release-event", G_CALLBACK(key_event), serviceble);
+	gtk_widget_show (window);
+
+	printf("Entering main loop\n");
+	g_main_loop_run(serviceble->loop);
+
+	printf("Exited main loop\n");
+	g_main_loop_unref(serviceble->loop);
+
+	service_delete(serviceble);
+	shared_delete(shared);
+	users_delete(users);
+	buffer_delete(extradata);
+
+	printf("The End\n");
+
+	return 0;
 }
-
 
 
 
