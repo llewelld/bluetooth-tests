@@ -55,10 +55,28 @@
 
 // Structure definitions
 
+typedef enum _SERVICESTATE {
+	SERVICESTATEBLE_INVALID = -1,
+
+	SERVICESTATEBLE_DORMANT,
+	SERVICESTATEBLE_INITIALISING,
+	SERVICESTATEBLE_INITIALISED,
+	SERVICESTATEBLE_ADVERTISING,
+	SERVICESTATEBLE_ADVERTISINGCONTINUOUS,
+	SERVICESTATEBLE_CONNECTED,
+	SERVICESTATEBLE_UNADVERTISING,
+	SERVICESTATEBLE_UNADVERTISED,
+	SERVICESTATEBLE_FINALISING,
+	SERVICESTATEBLE_FINALISED,
+
+	SERVICESTATEBLE_NUM
+} SERVICESTATE;
+
 typedef struct _ServiceBle {
 	GMainLoop * loop;
 	FsmService * fsmservice;
 	guint timeoutid;
+	guint cycletimeoutid;
 
 	LEAdvertisement1 * leadvertisement;
 	LEAdvertisingManager1 * leadvertisingmanager;
@@ -73,6 +91,8 @@ typedef struct _ServiceBle {
 	Buffer * buffer_write;
 	Buffer * buffer_read;
 	bool connected;
+	SERVICESTATE state;
+	bool cycling;
 	size_t maxsendsize;
 	size_t sendpos;
 	GDBusObjectManagerServer * object_manager_advert;
@@ -102,7 +122,6 @@ static gboolean serviceble_timeout(gpointer user_data);
 void advertising_start(ServiceBle * serviceble, bool continuous);
 void advertising_stop(ServiceBle * serviceble, bool finalise);
 
-static void initialise(ServiceBle * serviceble);
 static void finalise(ServiceBle * serviceble);
 static void set_advertising_frequency();
 static void appendbytes(char unsigned const * bytes, int num, Buffer * out);
@@ -123,7 +142,8 @@ static void on_g_bus_get (GObject *source_object, GAsyncResult *res, gpointer us
 static void on_leadvertising_manager1_proxy_new(GDBusConnection * connection, GAsyncResult *res, gpointer user_data);
 static void on_gatt_manager1_proxy_new(GDBusConnection * connection, GAsyncResult *res, gpointer user_data);
 static void on_gatt_manager1_call_unregister_application(GattManager1 * gattmanager, GAsyncResult *res, gpointer user_data);
-
+static gboolean cycle_timeout(gpointer user_data);
+static void set_state(ServiceBle * serviceble, SERVICESTATE state);
 
 
 ServiceBle * serviceble_new() {
@@ -134,6 +154,7 @@ ServiceBle * serviceble_new() {
 	serviceble->loop = NULL;
 	serviceble->fsmservice = fsmservice_new();
 	serviceble->timeoutid = 0;
+	serviceble->cycletimeoutid = 0;
 
 	serviceble->leadvertisement = NULL;
 	serviceble->leadvertisingmanager = NULL;
@@ -146,6 +167,8 @@ ServiceBle * serviceble_new() {
 	serviceble->buffer_write = buffer_new(0);
 	serviceble->buffer_read = buffer_new(0);
 	serviceble->connected = FALSE;
+	serviceble->state = SERVICESTATEBLE_INVALID;
+	serviceble->cycling = FALSE;
 	serviceble->maxsendsize = MAX_SEND_SIZE;
 	serviceble->sendpos = 0;
 	serviceble->object_manager_advert = NULL;
@@ -272,7 +295,7 @@ static void set_advertising_frequency() {
 	int dd;
 	int dev_id;
 	char bytes_disable[] = {0x00};
-	char bytes_interval[] = {0xA0, 0x00, 0xAF, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00};
+	char bytes_interval[] = {0xA0, 0x00, 0xAF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00};
 	char bytes_enable[] = {0x01};
 
 	dev_id = hci_get_route(NULL);
@@ -407,6 +430,7 @@ static gboolean handle_write_value(GattCharacteristic1 * object, GDBusMethodInvo
 
 	if (serviceble->connected == FALSE) {
 		serviceble->connected = TRUE;
+		set_state(serviceble, SERVICESTATEBLE_CONNECTED);
 		fsmservice_connected(serviceble->fsmservice);
 	}
 
@@ -550,6 +574,8 @@ static void on_unregister_advert(LEAdvertisingManager1 *proxy, GAsyncResult *res
 
 	printf("Unregistered advert with result %d\n", result);
 
+	set_state(serviceble, SERVICESTATEBLE_UNADVERTISED);
+
 	// All stopped
 	if (serviceble->connected == TRUE) {
 		printf("Setting as disconnected\n");
@@ -615,15 +641,13 @@ static void generate_uuid(ServiceBle * serviceble, bool continuous, char * uuid,
 	keypair_delete(keypair);
 }
 
-void serviceble_start(ServiceBle * serviceble) {
-	initialise(serviceble);
-}
-
 void serviceble_stop(ServiceBle * serviceble) {
 	advertising_stop(serviceble, TRUE);
 }
 
-static void initialise(ServiceBle * serviceble) {
+void serviceble_start(ServiceBle * serviceble) {
+	set_state(serviceble, SERVICESTATEBLE_INITIALISING);
+
 	printf("Creating object manager server\n");
 
 	serviceble->object_manager_advert = g_dbus_object_manager_server_new(BLUEZ_OBJECT_PATH);
@@ -635,12 +659,67 @@ static void initialise(ServiceBle * serviceble) {
 	// This is an asynchronous call, so initialisation continuous in the callback
 	g_bus_get(G_BUS_TYPE_SYSTEM, NULL, (GAsyncReadyCallback)(&on_g_bus_get), serviceble);
 
+	// Set up to periodically restart
+	serviceble->cycletimeoutid = g_timeout_add(10000, cycle_timeout, serviceble);
 
 	///////////////////////////////////////////////////////
 	///////////////////////////////////////////////////////
 	///////////////////////////////////////////////////////
 	///////////////////////////////////////////////////////
 }
+
+static gboolean cycle_timeout(gpointer user_data) {
+	ServiceBle * serviceble = (ServiceBle *)user_data;
+	bool recycle;
+
+	printf("\n\nXXXXXXXXXXXXXXXXXX CYCLE\n");
+
+	recycle = TRUE;
+
+	switch (serviceble->state) {
+		case SERVICESTATEBLE_INITIALISING:
+		case SERVICESTATEBLE_UNADVERTISING:
+		case SERVICESTATEBLE_FINALISING:
+		case SERVICESTATEBLE_CONNECTED:
+		case SERVICESTATEBLE_ADVERTISINGCONTINUOUS:
+			// Do nothing, wait again
+			break;
+		case SERVICESTATEBLE_ADVERTISING:
+		case SERVICESTATEBLE_INITIALISED:
+		case SERVICESTATEBLE_UNADVERTISED:
+			serviceble->cycling = TRUE;
+			break;
+		case SERVICESTATEBLE_FINALISED:
+			recycle = FALSE;
+			break;
+		case SERVICESTATEBLE_DORMANT:
+		case SERVICESTATEBLE_INVALID:
+		case SERVICESTATEBLE_NUM:
+		default:
+			printf("XXXXXXXXXXXXXXXXXX ERROR\n\n\n");
+			printf("Cycle during invalid state\n");
+			break;
+	}
+
+	if (serviceble->cycling == TRUE) {
+		printf("XXXXXXXXXXXXXXXXXX RECYCLE\n\n\n");
+		recycle = FALSE;
+		serviceble_stop(serviceble);
+	}
+	else {
+		printf("XXXXXXXXXXXXXXXXXX IGNORE\n\n\n");
+	}
+
+	if (recycle == FALSE) {
+		// This timeout fires only once
+		serviceble->cycletimeoutid = 0;
+	}
+
+	return recycle;
+}
+
+
+
 
 static void on_g_bus_get (GObject *source_object, GAsyncResult *res, gpointer user_data) {
 	ServiceBle * serviceble = (ServiceBle *)user_data;
@@ -694,6 +773,9 @@ static void on_gatt_manager1_proxy_new(GDBusConnection * connection, GAsyncResul
 
 		serviceble->object_manager_gatt = g_dbus_object_manager_server_new(BLUEZ_GATT_OBJECT_PATH);
 
+		printf("Service established\n");
+		set_state(serviceble, SERVICESTATEBLE_INITIALISED);
+
 		// Initialisation is complete, now start advertising
 		advertising_start(serviceble, FALSE);
 	}
@@ -701,6 +783,8 @@ static void on_gatt_manager1_proxy_new(GDBusConnection * connection, GAsyncResul
 
 
 static void finalise(ServiceBle * serviceble) {
+	set_state(serviceble, SERVICESTATEBLE_FINALISING);
+
 	///////////////////////////////////////////////////////
 	///////////////////////////////////////////////////////
 	///////////////////////////////////////////////////////
@@ -739,6 +823,18 @@ static void finalise(ServiceBle * serviceble) {
 	serviceble->object_manager_gatt = NULL;
 
 	///////////////////////////////////////////////////////
+
+	set_state(serviceble, SERVICESTATEBLE_FINALISED);
+
+	// Remove the timeout
+	g_source_remove(serviceble->cycletimeoutid);
+	serviceble->cycletimeoutid = 0;
+
+	// This is a recycle stop, so we need to start again
+	if (serviceble->cycling == TRUE) {
+		serviceble->cycling = FALSE;
+		serviceble_start(serviceble);
+	}
 }
 
 void advertising_start(ServiceBle * serviceble, bool continuous) {
@@ -871,7 +967,12 @@ void advertising_start(ServiceBle * serviceble, bool continuous) {
 
 	gatt_manager1_call_register_application(serviceble->gattmanager, BLUEZ_GATT_OBJECT_PATH, arg_options, NULL, (GAsyncReadyCallback)(&on_register_application), NULL);
 
-
+	if (continuous) {
+		set_state(serviceble, SERVICESTATEBLE_ADVERTISINGCONTINUOUS);
+	}
+	else {
+		set_state(serviceble, SERVICESTATEBLE_ADVERTISING);
+	}
 	// All started
 	//if (serviceble->connected == FALSE) {
 	//	serviceble->connected = TRUE;
@@ -880,6 +981,8 @@ void advertising_start(ServiceBle * serviceble, bool continuous) {
 }
 
 void advertising_stop(ServiceBle * serviceble, bool finalise) {
+	set_state(serviceble, SERVICESTATEBLE_UNADVERTISING);
+
 	serviceble->finalise = finalise;
 
 	///////////////////////////////////////////////////////
@@ -960,7 +1063,6 @@ static void on_gatt_manager1_call_unregister_application(GattManager1 * gattmana
 
 	// Publish the advertisement interface
 	//g_object_unref(serviceble->leadvertisement);
-
 }
 
 
@@ -1003,7 +1105,6 @@ static void serviceble_listen(void * user_data) {
 		LOG(LOG_DEBUG, "Listening");
 		printf("Listening\n");
 
-		//initialise(serviceble, TRUE);
 		advertising_start(serviceble, TRUE);
 	}
 }
@@ -1112,6 +1213,11 @@ gint main(gint argc, gchar * argv[]) {
 	return 0;
 }
 
+static void set_state(ServiceBle * serviceble, SERVICESTATE state) {
+	printf("State transition: %d -> %d\n", serviceble->state, state);
+
+	serviceble->state = state;
+}
 
 
 
