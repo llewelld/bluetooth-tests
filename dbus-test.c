@@ -125,7 +125,7 @@ void advertising_stop(ServiceBle * serviceble, bool finalise);
 static void finalise(ServiceBle * serviceble);
 static void set_advertising_frequency();
 static void appendbytes(char unsigned const * bytes, int num, Buffer * out);
-static void create_uuid(char const * commitmentb64, bool continuous, char uuid[sizeof(SERVICE_UUID) + 1], size_t length);
+static void create_uuid(KeyPair * keypair, bool continuous, Buffer * uuid);
 static gboolean handle_release(LEAdvertisement1 * object, GDBusMethodInvocation * invocation, gpointer user_data);
 static gboolean handle_read_value(GattCharacteristic1 * object, GDBusMethodInvocation * invocation, GVariant *arg_options, gpointer user_data);
 static void send_data(ServiceBle * serviceble, char const * data, size_t size);
@@ -137,7 +137,7 @@ static void on_register_advert(LEAdvertisingManager1 *proxy, GAsyncResult *res, 
 static void on_register_application(GattManager1 *proxy, GAsyncResult *res, gpointer user_data);
 static void on_unregister_advert(LEAdvertisingManager1 *proxy, GAsyncResult *res, gpointer user_data);
 static gboolean key_event(GtkWidget *widget, GdkEventKey *event, gpointer user_data);
-static void generate_uuid(ServiceBle * serviceble, bool continuous, char * uuid, size_t length);
+static void generate_uuid(ServiceBle * serviceble, bool continuous, Buffer * uuid);
 static void on_g_bus_get (GObject *source_object, GAsyncResult *res, gpointer user_data);
 static void on_leadvertising_manager1_proxy_new(GDBusConnection * connection, GAsyncResult *res, gpointer user_data);
 static void on_gatt_manager1_proxy_new(GDBusConnection * connection, GAsyncResult *res, gpointer user_data);
@@ -212,82 +212,6 @@ void service_delete(ServiceBle * serviceble) {
 		FREE(serviceble);
 		serviceble = NULL;
 	}
-}
-
-
-
-static void appendbytes(char unsigned const * bytes, int num, Buffer * out) {
-	int pos;
-	char letters[3];
-
-	for (pos = 0; pos < num; pos++) {
-		snprintf(letters, 3, "%02X", bytes[pos]);
-		buffer_append(out, letters, 2);
-	}
-}
-
-static void create_uuid(char const * commitmentb64, bool continuous, char uuid[sizeof(SERVICE_UUID) + 1], size_t length) {
-	unsigned char a[4];
-	unsigned char b[2];
-	unsigned char c[2];
-	unsigned char d[8];
-	Buffer * commitment;
-	Buffer * generated;
-	unsigned int pos;
-	char const * commitmentbytes;
-	size_t outlength;
-
-	commitment = buffer_new(0);
-	generated = buffer_new(0);
-	base64_decode_string(commitmentb64, commitment);
-
-	if (buffer_get_pos(commitment) != 32) {
-		printf("Incorrect commitment length\n");
-	}
-
-	commitmentbytes = buffer_get_buffer(commitment);
-	for (pos = 0; pos < 4; pos++) {
-		a[pos] = commitmentbytes[16 + pos];
-	}
-
-	for (pos = 0; pos < 2; pos++) {
-		b[pos] = commitmentbytes[20 + pos];
-	}
-
-	for (pos = 0; pos < 2; pos++) {
-		c[pos] = commitmentbytes[22 + pos];
-	}
-
-	for (pos = 0; pos < 8; pos++) {
-		d[pos] = commitmentbytes[24 + pos];
-	}
-
-	if (continuous) {
-		d[7] |= 0x01;
-	}
-	else {
-		d[7] &= 0xFE;
-	}
-
-	appendbytes(a, 4, generated);
-	buffer_append_string(generated, "-");
-	appendbytes(b, 2, generated);
-	buffer_append_string(generated, "-");
-	appendbytes(c, 2, generated);
-	buffer_append_string(generated, "-");
-	appendbytes(d, 2, generated);
-	buffer_append_string(generated, "-");
-	appendbytes(d + 2, 6, generated);
-
-	commitmentbytes = buffer_get_buffer(generated);
-	outlength = MIN((sizeof(SERVICE_UUID) + 1), length);
-	for (pos = 0; pos < outlength; pos++) {
-		uuid[pos] = commitmentbytes[pos];
-	}
-	uuid[(length - 1)] = 0;
-
-	buffer_delete(commitment);
-	buffer_delete(generated);
 }
 
 static void set_advertising_frequency() {
@@ -605,40 +529,98 @@ static gboolean key_event(GtkWidget *widget, GdkEventKey *event, gpointer user_d
 	return FALSE;
 }
 
-static void generate_uuid(ServiceBle * serviceble, bool continuous, char * uuid, size_t length) {
-	char characteristic[CHARACTERISTIC_LENGTH];
+static void generate_uuid(ServiceBle * serviceble, bool continuous, Buffer * uuid) {
 	KeyPair * keypair;
-	EC_KEY * publickey;
-	Buffer * commitment;
 	gboolean result;
 
-	strncpy(characteristic, CHARACTERISTIC_VALUE, CHARACTERISTIC_LENGTH);
-	serviceble->charlength = strlen(characteristic);
-	characteristic[CHARACTERISTIC_LENGTH - 1] = 0;
+	serviceble->charlength = CHARACTERISTIC_LENGTH;
 
 	keypair = keypair_new();
-	commitment = buffer_new(0);
+
 	result = keypair_import(keypair, "pico_pub_key.der", "pico_priv_key.der");
 	if (result == FALSE) {
 		printf("Failed to load keys\n");
 	}
 
+	// "NdzdISywn1akt21lD/68HRlL6SHNguPSI2ULXXcHjzM="
+	create_uuid(keypair, continuous, uuid);
+	//strcpy(uuid, SERVICE_UUID);
+	//printf("UUID: %s\n", uuid);
+
+	keypair_delete(keypair);
+}
+
+static void appendbytes(char unsigned const * bytes, int num, Buffer * out) {
+	int pos;
+	char letters[3];
+
+	for (pos = 0; pos < num; pos++) {
+		snprintf(letters, 3, "%02X", bytes[pos]);
+		buffer_append(out, letters, 2);
+	}
+}
+
+static void create_uuid(KeyPair * keypair, bool continuous, Buffer * uuid) {
+	unsigned char a[4];
+	unsigned char b[2];
+	unsigned char c[2];
+	unsigned char d[8];
+	unsigned int pos;
+	Buffer * commitment;
+	char const * commitmentbytes;
+	EC_KEY * publickey;
+	gboolean result;
+
+	commitment = buffer_new(0);
 	publickey = keypair_getpublickey(keypair);
 
-	result = cryptosupport_generate_commitment_base64(publickey, commitment);
+	result = cryptosupport_generate_commitment(publickey, commitment);
 	if (result == FALSE) {
 		printf("Failed to generate commitment\n");
 	}
 
-	buffer_print(commitment);
+	buffer_print_base64(commitment);
 
-	// "NdzdISywn1akt21lD/68HRlL6SHNguPSI2ULXXcHjzM="
-	create_uuid(buffer_get_buffer(commitment), continuous, uuid, length);
-	//strcpy(uuid, SERVICE_UUID);
-	printf("UUID: %s\n", uuid);
+	if (buffer_get_pos(commitment) != 32) {
+		printf("Incorrect commitment length\n");
+	}
+
+	commitmentbytes = buffer_get_buffer(commitment);
+	for (pos = 0; pos < 4; pos++) {
+		a[pos] = commitmentbytes[16 + pos];
+	}
+
+	for (pos = 0; pos < 2; pos++) {
+		b[pos] = commitmentbytes[20 + pos];
+	}
+
+	for (pos = 0; pos < 2; pos++) {
+		c[pos] = commitmentbytes[22 + pos];
+	}
+
+	for (pos = 0; pos < 8; pos++) {
+		d[pos] = commitmentbytes[24 + pos];
+	}
+
+	if (continuous) {
+		d[7] |= 0x01;
+	}
+	else {
+		d[7] &= 0xFE;
+	}
+
+	buffer_clear(uuid);
+	appendbytes(a, 4, uuid);
+	buffer_append_string(uuid, "-");
+	appendbytes(b, 2, uuid);
+	buffer_append_string(uuid, "-");
+	appendbytes(c, 2, uuid);
+	buffer_append_string(uuid, "-");
+	appendbytes(d, 2, uuid);
+	buffer_append_string(uuid, "-");
+	appendbytes(d + 2, 6, uuid);
 
 	buffer_delete(commitment);
-	keypair_delete(keypair);
 }
 
 void serviceble_stop(ServiceBle * serviceble) {
@@ -839,7 +821,7 @@ static void finalise(ServiceBle * serviceble) {
 
 void advertising_start(ServiceBle * serviceble, bool continuous) {
 	gchar const * uuids[] = {SERVICE_UUID, NULL};
-	char uuid[sizeof(SERVICE_UUID) + 1];
+	Buffer * uuid;
 	ObjectSkeleton * object_advert;
 	GVariantDict dict_options;
 	const gchar * const charflags_outgoing[] = {"notify", NULL};
@@ -848,8 +830,9 @@ void advertising_start(ServiceBle * serviceble, bool continuous) {
 	GVariant * variant2;
 	GVariant * arg_options;
 
-	generate_uuid(serviceble, continuous, uuid, (sizeof(SERVICE_UUID) + 1));
-	uuids[0] = uuid;
+	uuid = buffer_new(0);
+	generate_uuid(serviceble, continuous, uuid);
+	uuids[0] = buffer_get_buffer(uuid);
 
 	printf("Creating advertisement\n");
 
@@ -889,7 +872,7 @@ void advertising_start(ServiceBle * serviceble, bool continuous) {
 	serviceble->gattservice = gatt_service1_skeleton_new();
 
 	// Set the gatt service properties
-	gatt_service1_set_uuid(serviceble->gattservice, uuid);
+	gatt_service1_set_uuid(serviceble->gattservice, buffer_get_buffer(uuid));
 	gatt_service1_set_primary(serviceble->gattservice, TRUE);
 
 	serviceble->object_gatt_service = object_skeleton_new (BLUEZ_GATT_SERVICE_PATH);
@@ -978,6 +961,9 @@ void advertising_start(ServiceBle * serviceble, bool continuous) {
 	//	serviceble->connected = TRUE;
 	//	fsmservice_connected(serviceble->fsmservice);
 	//}
+	
+	buffer_delete(uuid);
+	uuid = NULL;
 }
 
 void advertising_stop(ServiceBle * serviceble, bool finalise) {
